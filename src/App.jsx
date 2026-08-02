@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { PDFDocument } from 'pdf-lib';
 import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import logoImage from '../../Logo.jpeg';
+import logoImage from '/Logo.jpeg';
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
