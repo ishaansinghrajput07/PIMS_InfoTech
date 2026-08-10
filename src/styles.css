@@ -20,6 +20,7 @@
 html {
   scroll-behavior: smooth;
   min-height: 100%;
+  zoom: 0.8;
 }
 body {
   margin: 0;
