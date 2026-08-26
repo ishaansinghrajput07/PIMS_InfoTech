@@ -1,4 +1,4 @@
-import { Link, Route, Routes } from 'react-router-dom';
+import { Link, Route, Routes, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { PDFDocument } from 'pdf-lib';
@@ -369,7 +369,7 @@ const legalLinks = [
   { label: 'Data Privacy Disclaimer', path: '/privacy' }
 ];
 
-const adminCredentials = { username: 'admin', password: 'PimsAdmin@2026' };
+const adminCredentials = { username: 'admin', password: 'admin@2026' };
 
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -1278,6 +1278,7 @@ function App() {
     message: ''
   });
   const [status, setStatus] = useState('');
+  const [toast, setToast] = useState(null);
   const [query, setQuery] = useState('');
   const [activeTool, setActiveTool] = useState(utilities[0]);
   const [activeFaq, setActiveFaq] = useState(0);
@@ -1317,6 +1318,16 @@ function App() {
     setForm((current) => ({ ...current, [field]: value }));
   };
 
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type, id: Date.now() });
+  };
+
+  useEffect(() => {
+    if (!toast) return undefined;
+    const timer = setTimeout(() => setToast(null), 3600);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
   const saveEnquiry = (entry) => {
     setEnquiries((current) => {
       const next = [entry, ...current];
@@ -1341,8 +1352,10 @@ function App() {
     try {
       await axios.post('/api/enquiries', form);
       setStatus('Thanks! Your enquiry has been received.');
+      showToast('Your enquiry has been submitted successfully.');
     } catch (error) {
       setStatus('Unable to send enquiry right now. Saved locally for admin review.');
+      showToast('Saved locally for admin review.', 'error');
     }
 
     saveEnquiry(entry);
@@ -1398,12 +1411,14 @@ function App() {
                       <div className="hero-slides" aria-live="polite">
                         {services.map((service, index) => (
                           <article key={service.title} className={`hero-slide ${index === currentSlide ? 'active' : ''}`}>
-                            <span className="hero-slide-badge">{service.badge}</span>
+                            <div className="hero-slide-content">
+                              <span className="hero-slide-badge">{service.badge}</span>
+                              <h4>{service.title}</h4>
+                              <p>{service.description}</p>
+                            </div>
                             <div className="hero-slide-media">
                               <img src={service.image} alt={service.title} loading="lazy" />
                             </div>
-                            <h4>{service.title}</h4>
-                            <p>{service.description}</p>
                           </article>
                         ))}
                       </div>
@@ -1815,18 +1830,21 @@ function App() {
         />
         <Route path="/services" element={<ServicesPage />} />
         <Route path="/about" element={<AboutPage />} />
-        <Route path="/admin" element={<AdminDashboard enquiries={enquiries} setEnquiries={setEnquiries} />} />
+        <Route path="/admin" element={<AdminDashboard enquiries={enquiries} setEnquiries={setEnquiries} onToast={showToast} />} />
         <Route path="/contact" element={<ContactPage />} />
         <Route path="/privacy" element={<PrivacyPage />} />
         <Route path="/terms" element={<InfoPage title="Terms & Conditions" body="By using these services, you agree to use them responsibly and lawfully. Pims Infotech reserves the right to update these terms as the platform evolves." />} />
       </Routes>
+      {toast && <Toast key={toast.id} message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
   );
 }
 
-function AdminDashboard({ enquiries, setEnquiries }) {
+function AdminDashboard({ enquiries, setEnquiries, onToast }) {
+  const navigate = useNavigate();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [login, setLogin] = useState({ username: '', password: '' });
+  const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [draft, setDraft] = useState({ name: '', email: '', message: '' });
@@ -1836,9 +1854,18 @@ function AdminDashboard({ enquiries, setEnquiries }) {
     if (login.username === adminCredentials.username && login.password === adminCredentials.password) {
       setIsAuthenticated(true);
       setLoginError('');
+      onToast('Admin login successful.');
       return;
     }
     setLoginError('Invalid username or password.');
+    onToast('Invalid username or password.', 'error');
+  };
+
+  const handleLogout = () => {
+    setIsAuthenticated(false);
+    setLogin({ username: '', password: '' });
+    onToast('You have been logged out.');
+    navigate('/');
   };
 
   const saveStorage = (next) => {
@@ -1856,6 +1883,7 @@ function AdminDashboard({ enquiries, setEnquiries }) {
   const handleDelete = (id) => {
     const next = enquiries.filter((entry) => entry.id !== id);
     saveStorage(next);
+    onToast('Enquiry deleted.');
   };
 
   const handleSave = () => {
@@ -1866,6 +1894,7 @@ function AdminDashboard({ enquiries, setEnquiries }) {
     saveStorage(next);
     setEditingId(null);
     setDraft({ name: '', email: '', message: '' });
+    onToast('Enquiry updated successfully.');
   };
 
   const handleDownload = () => {
@@ -1883,6 +1912,7 @@ function AdminDashboard({ enquiries, setEnquiries }) {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
+    onToast('Enquiries exported as CSV.');
   };
 
   if (!isAuthenticated) {
@@ -1899,7 +1929,10 @@ function AdminDashboard({ enquiries, setEnquiries }) {
             </label>
             <label>
               Password
-              <input type="password" value={login.password} onChange={(event) => setLogin({ ...login, password: event.target.value })} autoComplete="current-password" required />
+              <span className="password-field">
+                <input type={showPassword ? 'text' : 'password'} value={login.password} onChange={(event) => setLogin({ ...login, password: event.target.value })} autoComplete="current-password" required />
+                <button type="button" className="password-toggle" onClick={() => setShowPassword((current) => !current)} aria-label={showPassword ? 'Hide password' : 'Show password'} title={showPassword ? 'Hide password' : 'Show password'}><span aria-hidden="true">{showPassword ? '🙈' : '👁'}</span></button>
+              </span>
             </label>
             {loginError && <p className="status login-error">{loginError}</p>}
             <button type="submit" className="btn btn-primary">Sign in</button>
@@ -1917,8 +1950,9 @@ function AdminDashboard({ enquiries, setEnquiries }) {
             <p className="eyebrow"><span className="section-badge">🗂️</span> ADMIN DASHBOARD</p>
             <h2>Manage enquiries</h2>
           </div>
-          <div className="hero-actions">
+          <div className="hero-actions admin-header-actions">
             <button type="button" className="btn btn-secondary" onClick={handleDownload}>Export CSV</button>
+            <button type="button" className="btn btn-danger" onClick={handleLogout}><span className="logout-icon" aria-hidden="true">⏻</span> Logout</button>
           </div>
         </div>
 
@@ -1977,6 +2011,16 @@ function AdminDashboard({ enquiries, setEnquiries }) {
         </div>
       </main>
     </PageLayout>
+  );
+}
+
+function Toast({ message, type, onClose }) {
+  return (
+    <div className={`toast toast-${type}`} role="status" aria-live="polite">
+      <span>{type === 'error' ? '!' : '✓'}</span>
+      <strong>{message}</strong>
+      <button type="button" onClick={onClose} aria-label="Dismiss notification">×</button>
+    </div>
   );
 }
 
