@@ -4,6 +4,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { PDFDocument } from 'pdf-lib';
 import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { Document, Packer, Paragraph, TextRun } from 'docx';
+import JSZip from 'jszip';
+import pptxgen from 'pptxgenjs';
+import mammoth from 'mammoth/mammoth.browser';
 import logoImage from '/Logo.jpeg';
 
 GlobalWorkerOptions.workerSrc = workerUrl;
@@ -531,6 +535,74 @@ async function extractPdfText(file) {
   return pages.join('\n\n');
 }
 
+async function extractOfficeText(file) {
+  if (file.name.toLowerCase().endsWith('.txt')) return file.text();
+  const result = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
+  return result.value;
+}
+
+async function createDocxFromText(text) {
+  const paragraphs = text.split(/\n+/).filter(Boolean).map((line) => new Paragraph({ children: [new TextRun(line)] }));
+  const document = new Document({ sections: [{ children: paragraphs.length ? paragraphs : [new Paragraph('No text was found in this PDF.')] }] });
+  return Packer.toBlob(document);
+}
+
+function wrapText(text, maxCharacters = 90) {
+  const words = text.split(/\s+/);
+  const lines = [];
+  let line = '';
+  words.forEach((word) => {
+    if ((line + ' ' + word).trim().length > maxCharacters && line) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = `${line} ${word}`.trim();
+    }
+  });
+  if (line) lines.push(line);
+  return lines;
+}
+
+async function createPdfFromText(text) {
+  const pdfDoc = await PDFDocument.create();
+  const lines = text.split(/\n+/).flatMap((line) => wrapText(line || ' '));
+  let page = pdfDoc.addPage([612, 792]);
+  let y = 750;
+  lines.forEach((line) => {
+    if (y < 40) {
+      page = pdfDoc.addPage([612, 792]);
+      y = 750;
+    }
+    page.drawText(line, { x: 40, y, size: 10 });
+    y -= 16;
+  });
+  return pdfDoc.save();
+}
+
+async function createPowerPointFromPdf(file) {
+  const images = await convertPdfToImages(file);
+  const presentation = new pptxgen();
+  presentation.layout = 'LAYOUT_WIDE';
+  for (const imageBlob of images) {
+    const slide = presentation.addSlide();
+    slide.background = { color: 'FFFFFF' };
+    slide.addImage({ data: await readFileAsDataUrl(imageBlob), x: 0, y: 0, w: 13.333, h: 7.5 });
+  }
+  return presentation.write({ outputType: 'blob' });
+}
+
+async function extractPowerPointText(file) {
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const slideFiles = Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)).sort();
+  const slides = [];
+  for (const slideFile of slideFiles) {
+    const xml = await zip.files[slideFile].async('text');
+    const text = [...xml.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)].map((match) => match[1]).join(' ');
+    slides.push(text || 'Blank slide');
+  }
+  return slides.join('\n\n');
+}
+
 async function updatePdfPages(file, options) {
   const sourcePdf = await PDFDocument.load(await file.arrayBuffer());
   const pageNumbers = options.pageNumbers || sourcePdf.getPageIndices();
@@ -762,9 +834,41 @@ function ToolWorkspace({ tool }) {
         const blob = await processImageFile(files[0], { format, quality: 0.92 });
         downloadBlob(blob, `${files[0].name.replace(/\.[^.]+$/, '')}.${isPng ? 'png' : 'jpg'}`);
         setStatus('Image converted successfully.');
-      } else if (['PDF to Word', 'Word to PDF', 'PDF to PowerPoint', 'PowerPoint to PDF'].includes(tool.title)) {
+      } else if (tool.title === 'PDF to Word') {
         setAtsResult(null);
-        setStatus('This browser-only version cannot preserve Office document layouts. Use PDF to Text or JPG to PDF for a reliable export.');
+        if (!files[0]) {
+          setStatus('Please choose a PDF file first.');
+          return;
+        }
+        const text = await extractPdfText(files[0]);
+        downloadBlob(await createDocxFromText(text), 'converted-document.docx');
+        setStatus('PDF text exported to a DOCX file.');
+      } else if (tool.title === 'Word to PDF') {
+        setAtsResult(null);
+        if (!files[0]) {
+          setStatus('Please choose a DOCX or TXT file first.');
+          return;
+        }
+        const text = await extractOfficeText(files[0]);
+        downloadBlob(new Blob([await createPdfFromText(text)], { type: 'application/pdf' }), 'converted-document.pdf');
+        setStatus('Word text exported to a PDF file.');
+      } else if (tool.title === 'PDF to PowerPoint') {
+        setAtsResult(null);
+        if (!files[0]) {
+          setStatus('Please choose a PDF file first.');
+          return;
+        }
+        downloadBlob(await createPowerPointFromPdf(files[0]), 'converted-slides.pptx');
+        setStatus('PDF pages exported as PowerPoint slides.');
+      } else if (tool.title === 'PowerPoint to PDF') {
+        setAtsResult(null);
+        if (!files[0]) {
+          setStatus('Please choose a PPTX or TXT file first.');
+          return;
+        }
+        const text = files[0].name.toLowerCase().endsWith('.txt') ? await files[0].text() : await extractPowerPointText(files[0]);
+        downloadBlob(new Blob([await createPdfFromText(text)], { type: 'application/pdf' }), 'converted-presentation.pdf');
+        setStatus('PowerPoint text exported to a PDF file.');
       } else if (tool.title === 'Protect PDF' || tool.title === 'Unlock PDF') {
         setAtsResult(null);
         setStatus('PDF encryption requires a server-side processor and is not performed in this browser-only app.');
@@ -847,7 +951,7 @@ function ToolWorkspace({ tool }) {
         <div className="tool-form">
           <label>
             Choose file{isPdfTool && tool.title !== 'JPG to PDF' ? '' : 's'}
-            <input type="file" multiple={tool.title === 'JPG to PDF' || tool.title === 'PDF Merge' || tool.title === 'Merge PDF'} onChange={handleFileSelection} accept={tool.title === 'ATS Resume Checker' ? '.pdf,.txt,.doc,.docx' : tool.title === 'Word to PDF' ? '.doc,.docx,.txt' : isPdfTool && tool.title !== 'JPG to PDF' ? '.pdf' : 'image/*'} />
+            <input type="file" multiple={tool.title === 'JPG to PDF' || tool.title === 'PDF Merge' || tool.title === 'Merge PDF'} onChange={handleFileSelection} accept={tool.title === 'ATS Resume Checker' ? '.pdf,.txt,.doc,.docx' : tool.title === 'Word to PDF' ? '.docx,.txt' : tool.title === 'PowerPoint to PDF' ? '.pptx,.txt' : isPdfTool && tool.title !== 'JPG to PDF' ? '.pdf' : 'image/*'} />
           </label>
           {isImageTool && (
             <>
