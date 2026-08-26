@@ -1,6 +1,6 @@
 import { Link, Route, Routes } from 'react-router-dom';
 import axios from 'axios';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { PDFDocument } from 'pdf-lib';
 import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -15,6 +15,9 @@ GlobalWorkerOptions.workerSrc = workerUrl;
 const utilities = [
   { title: 'ATS Resume Checker', description: 'Scan and score your resume for ATS compatibility and suggestions.', badge: 'Career Tools', highlight: 'Instant feedback' },
   { title: 'Resume Maker', description: 'Create polished resumes quickly with modern, ATS-friendly templates.', badge: 'Career Tools', highlight: 'Professional layouts' },
+  { title: 'Writing Assistant', description: 'Check grammar, clarity, punctuation, and common writing mistakes in your text.', badge: 'Writing Tools', highlight: 'Clearer writing' },
+  { title: 'Design Canvas', description: 'Create branded social posts and simple graphics with editable text, colors, and PNG export.', badge: 'Design Tools', highlight: 'Canvas editor' },
+  { title: 'AI Paraphraser', description: 'Rewrite text into clear, natural variations with balanced, formal, or concise tone.', badge: 'Writing Tools', highlight: 'Fresh wording' },
   { title: 'Marriage Biodata', description: 'Generate elegant biodata profiles for families, wedding invitations, and introductions.', badge: 'Personal Profiles', highlight: 'Custom formatting' },
   { title: 'Image Compressor', description: 'Reduce image size while keeping quality intact for websites and sharing.', badge: 'Image Tools', highlight: 'Fast compression' },
   { title: 'Compress PDF', description: 'Reduce the file size of your PDF documents for easy sharing.', badge: 'Document Tools', highlight: 'Smaller files' },
@@ -233,6 +236,9 @@ const companyLinks = [
 const utilityIcons = {
   'ATS Resume Checker': '📊',
   'Resume Maker': '📝',
+  'Writing Assistant': '✍️',
+  'Design Canvas': '🖌️',
+  'AI Paraphraser': '🔄',
   'Marriage Biodata': '💍',
   'Image Compressor': '🖼️',
   'Compress PDF': '🗜️',
@@ -363,6 +369,8 @@ const legalLinks = [
   { label: 'Data Privacy Disclaimer', path: '/privacy' }
 ];
 
+const adminCredentials = { username: 'admin', password: 'PimsAdmin@2026' };
+
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -377,6 +385,49 @@ function downloadBlob(blob, filename) {
 function downloadText(content, filename) {
   const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
   downloadBlob(blob, filename);
+}
+
+const writingRules = [
+  { pattern: /\bteh\b/gi, replacement: 'the', message: 'Corrected “teh” to “the”.' },
+  { pattern: /\brecieve\b/gi, replacement: 'receive', message: 'Corrected “recieve” to “receive”.' },
+  { pattern: /\bseperate\b/gi, replacement: 'separate', message: 'Corrected “seperate” to “separate”.' },
+  { pattern: /\bdefinately\b/gi, replacement: 'definitely', message: 'Corrected “definately” to “definitely”.' },
+  { pattern: /\btheir is\b/gi, replacement: 'there is', message: 'Changed “their is” to “there is”.' },
+  { pattern: /\byour welcome\b/gi, replacement: "you're welcome", message: 'Changed “your welcome” to “you’re welcome”.' },
+  { pattern: /\bi\b/g, replacement: 'I', message: 'Capitalized the pronoun “I”.' }
+];
+
+function analyzeWriting(text) {
+  let correctedText = text.replace(/[ \t]+/g, ' ').replace(/\s+([,.!?;:])/g, '$1').replace(/([.!?])(?=[A-Za-z])/g, '$1 ');
+  const issues = [];
+  writingRules.forEach((rule) => {
+    if (rule.pattern.test(correctedText)) {
+      correctedText = correctedText.replace(rule.pattern, rule.replacement);
+      issues.push(rule.message);
+    }
+    rule.pattern.lastIndex = 0;
+  });
+  if (correctedText && !/[.!?]$/.test(correctedText.trim())) {
+    correctedText = `${correctedText.trim()}.`;
+    issues.push('Added ending punctuation.');
+  }
+  if (!issues.length) issues.push('No common grammar or punctuation issues found.');
+  return { correctedText, issues };
+}
+
+const paraphraseReplacements = {
+  balanced: [['use', 'utilize'], ['help', 'support'], ['make', 'create'], ['show', 'demonstrate'], ['start', 'begin'], ['important', 'valuable'], ['quick', 'fast'], ['about', 'regarding']],
+  formal: [['use', 'employ'], ['help', 'assist'], ['make', 'develop'], ['show', 'illustrate'], ['start', 'commence'], ['important', 'significant'], ['quick', 'prompt'], ['about', 'concerning']],
+  concise: [['in order to', 'to'], ['a number of', 'many'], ['at this point in time', 'now'], ['due to the fact that', 'because'], ['make use of', 'use'], ['very important', 'essential']]
+};
+
+function paraphraseText(text, mode) {
+  let result = text.trim().replace(/\s+/g, ' ');
+  (paraphraseReplacements[mode] || paraphraseReplacements.balanced).forEach(([source, replacement]) => {
+    result = result.replace(new RegExp(`\\b${source}\\b`, 'gi'), (match) => match[0] === match[0].toUpperCase() ? replacement[0].toUpperCase() + replacement.slice(1) : replacement);
+  });
+  if (mode === 'concise') result = result.replace(/\b(really|very|just|actually)\b\s*/gi, '');
+  return result;
 }
 
 function buildResumeHtml(data) {
@@ -681,17 +732,30 @@ function ToolWorkspace({ tool }) {
     angle: '90',
     filter: 'none',
     pageNumbers: '',
-    watermark: ''
+    watermark: '',
+    writingText: '',
+    paraphraseText: '',
+    paraphraseMode: 'balanced',
+    canvasText: 'Make ideas visible',
+    canvasSubtitle: 'Design something worth sharing',
+    canvasBackground: '#0b1630',
+    canvasAccent: '#67e8f9',
+    canvasTemplate: 'bold'
   });
   const [files, setFiles] = useState([]);
   const [status, setStatus] = useState('');
   const [atsResult, setAtsResult] = useState(null);
+  const [writingResult, setWritingResult] = useState(null);
+  const [paraphraseResult, setParaphraseResult] = useState('');
+  const canvasRef = useRef(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
   useEffect(() => {
     setFiles([]);
     setStatus('');
     setAtsResult(null);
+    setWritingResult(null);
+    setParaphraseResult('');
     setIsProcessing(false);
   }, [tool.title]);
 
@@ -726,6 +790,32 @@ function ToolWorkspace({ tool }) {
         const filename = `${(form.groomName || 'biodata').toLowerCase().replace(/\s+/g, '-') || 'biodata'}.html`;
         downloadText(buildBiodataHtml(form), filename);
         setStatus('Biodata document generated successfully.');
+      } else if (tool.title === 'Writing Assistant') {
+        setAtsResult(null);
+        if (!form.writingText.trim()) {
+          setStatus('Paste some text to check first.');
+          return;
+        }
+        setWritingResult(analyzeWriting(form.writingText));
+        setStatus('Writing review completed.');
+      } else if (tool.title === 'AI Paraphraser') {
+        setAtsResult(null);
+        if (!form.paraphraseText.trim()) {
+          setStatus('Paste some text to paraphrase first.');
+          return;
+        }
+        setParaphraseResult(paraphraseText(form.paraphraseText, form.paraphraseMode));
+        setStatus('Paraphrase generated successfully.');
+      } else if (tool.title === 'Design Canvas') {
+        setAtsResult(null);
+        if (!canvasRef.current) {
+          setStatus('Canvas preview is not ready yet.');
+          return;
+        }
+        canvasRef.current.toBlob((blob) => {
+          if (blob) downloadBlob(blob, 'pims-design.png');
+        }, 'image/png');
+        setStatus('Design exported as pims-design.png.');
       } else if (['Image Compressor', 'Resize Image', 'Crop Image', 'Rotate Image', 'Image Filters', 'Background Remover'].includes(tool.title)) {
         setAtsResult(null);
         if (!files[0]) {
@@ -892,6 +982,43 @@ function ToolWorkspace({ tool }) {
   const isPdfTool = ['ATS Resume Checker', 'JPG to PDF', 'PDF to JPG', 'Compress PDF', 'PDF Merge', 'Merge PDF', 'PDF Split', 'Split PDF', 'Organize Pages', 'Rotate Pages', 'Add Page Numbers', 'Watermark PDF', 'PDF to Text', 'PDF to Excel', 'PDF to Word', 'Word to PDF', 'PDF to PowerPoint', 'PowerPoint to PDF'].includes(tool.title);
   const isFileTool = isImageTool || isPdfTool || tool.title === 'Digital Signature';
 
+  useEffect(() => {
+    if (tool.title !== 'Design Canvas' || !canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const context = canvas.getContext('2d');
+    const gradient = context.createLinearGradient(0, 0, canvas.width, canvas.height);
+    gradient.addColorStop(0, form.canvasBackground);
+    gradient.addColorStop(1, form.canvasTemplate === 'soft' ? '#172554' : '#111827');
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = form.canvasAccent;
+    context.fillRect(72, 72, 120, 12);
+    context.font = '700 28px Arial, sans-serif';
+    context.fillText('PIMS INFOTECH', 72, 142);
+    context.fillStyle = '#ffffff';
+    context.font = '700 76px Arial, sans-serif';
+    const words = form.canvasText.trim().split(/\s+/);
+    let line = '';
+    let y = 430;
+    words.forEach((word) => {
+      const nextLine = line ? `${line} ${word}` : word;
+      if (context.measureText(nextLine).width > 860 && line) {
+        context.fillText(line, 72, y);
+        line = word;
+        y += 92;
+      } else {
+        line = nextLine;
+      }
+    });
+    if (line) context.fillText(line, 72, y);
+    context.fillStyle = '#d7e3f4';
+    context.font = '400 30px Arial, sans-serif';
+    context.fillText(form.canvasSubtitle, 72, y + 88);
+    context.fillStyle = form.canvasAccent;
+    context.font = '700 24px Arial, sans-serif';
+    context.fillText('DESIGN. CREATE. SHARE.', 72, 950);
+  }, [tool.title, form.canvasText, form.canvasSubtitle, form.canvasBackground, form.canvasAccent, form.canvasTemplate]);
+
   return (
     <div className="tool-workspace">
       {tool.title === 'Resume Maker' && (
@@ -953,6 +1080,80 @@ function ToolWorkspace({ tool }) {
             Biodata description
             <textarea value={form.details} onChange={(event) => updateField('details', event.target.value)} placeholder="Share family details and a short introduction" />
           </label>
+        </div>
+      )}
+
+      {tool.title === 'Writing Assistant' && (
+        <div className="tool-form writing-tool">
+          <label>
+            Text to review
+            <textarea value={form.writingText} onChange={(event) => updateField('writingText', event.target.value)} placeholder="Paste an email, paragraph, or draft here..." />
+          </label>
+          {writingResult && (
+            <div className="tool-result">
+              <strong>Suggested version</strong>
+              <textarea value={writingResult.correctedText} readOnly />
+              <ul>{writingResult.issues.map((issue) => <li key={issue}>{issue}</li>)}</ul>
+              <button type="button" className="btn btn-secondary" onClick={() => navigator.clipboard?.writeText(writingResult.correctedText)}>Copy suggestion</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tool.title === 'AI Paraphraser' && (
+        <div className="tool-form writing-tool">
+          <label>
+            Text to paraphrase
+            <textarea value={form.paraphraseText} onChange={(event) => updateField('paraphraseText', event.target.value)} placeholder="Paste text you want to rewrite..." />
+          </label>
+          <label>
+            Writing style
+            <select value={form.paraphraseMode} onChange={(event) => updateField('paraphraseMode', event.target.value)}>
+              <option value="balanced">Balanced</option>
+              <option value="formal">Formal</option>
+              <option value="concise">Concise</option>
+            </select>
+          </label>
+          {paraphraseResult && (
+            <div className="tool-result">
+              <strong>Paraphrased version</strong>
+              <textarea value={paraphraseResult} readOnly />
+              <button type="button" className="btn btn-secondary" onClick={() => navigator.clipboard?.writeText(paraphraseResult)}>Copy paraphrase</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tool.title === 'Design Canvas' && (
+        <div className="canvas-tool">
+          <div className="tool-form canvas-controls">
+            <label>
+              Main message
+              <input value={form.canvasText} onChange={(event) => updateField('canvasText', event.target.value)} maxLength="70" />
+            </label>
+            <label>
+              Supporting line
+              <input value={form.canvasSubtitle} onChange={(event) => updateField('canvasSubtitle', event.target.value)} maxLength="80" />
+            </label>
+            <label>
+              Template
+              <select value={form.canvasTemplate} onChange={(event) => updateField('canvasTemplate', event.target.value)}>
+                <option value="bold">Bold dark</option>
+                <option value="soft">Soft blue</option>
+              </select>
+            </label>
+            <label>
+              Background
+              <input type="color" value={form.canvasBackground} onChange={(event) => updateField('canvasBackground', event.target.value)} />
+            </label>
+            <label>
+              Accent
+              <input type="color" value={form.canvasAccent} onChange={(event) => updateField('canvasAccent', event.target.value)} />
+            </label>
+          </div>
+          <div className="canvas-preview">
+            <canvas ref={canvasRef} width="1080" height="1080" aria-label="Design preview" />
+          </div>
         </div>
       )}
 
@@ -1612,11 +1813,11 @@ function App() {
             </PageLayout>
           }
         />
-        <Route path="/services" element={<InfoPage title="Our Services" body="Pims Infotech offers custom software, cloud and DevOps services, AI-driven automation, and document workflow solutions designed to fit modern businesses." />} />
-        <Route path="/about" element={<InfoPage title="About Pims Infotech" body="Pims Infotech is a technology-focused company that helps businesses modernize products, automate everyday tasks, and deliver polished digital experiences with dependable support." />} />
+        <Route path="/services" element={<ServicesPage />} />
+        <Route path="/about" element={<AboutPage />} />
         <Route path="/admin" element={<AdminDashboard enquiries={enquiries} setEnquiries={setEnquiries} />} />
-        <Route path="/contact" element={<InfoPage title="Contact Pims Infotech" body="Use the contact form or reach us directly at contact@pimsinfotech.com or +91 72918 52216. We are happy to help with product questions, support needs, and workflow guidance." />} />
-        <Route path="/privacy" element={<InfoPage title="Privacy Policy" body="We respect your privacy and use your data only to provide support, respond to enquiries, and improve our services. Any information you share through the site will be handled carefully and securely." />} />
+        <Route path="/contact" element={<ContactPage />} />
+        <Route path="/privacy" element={<PrivacyPage />} />
         <Route path="/terms" element={<InfoPage title="Terms & Conditions" body="By using these services, you agree to use them responsibly and lawfully. Pims Infotech reserves the right to update these terms as the platform evolves." />} />
       </Routes>
     </div>
@@ -1624,8 +1825,21 @@ function App() {
 }
 
 function AdminDashboard({ enquiries, setEnquiries }) {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [login, setLogin] = useState({ username: '', password: '' });
+  const [loginError, setLoginError] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [draft, setDraft] = useState({ name: '', email: '', message: '' });
+
+  const handleLogin = (event) => {
+    event.preventDefault();
+    if (login.username === adminCredentials.username && login.password === adminCredentials.password) {
+      setIsAuthenticated(true);
+      setLoginError('');
+      return;
+    }
+    setLoginError('Invalid username or password.');
+  };
 
   const saveStorage = (next) => {
     setEnquiries(next);
@@ -1670,6 +1884,30 @@ function AdminDashboard({ enquiries, setEnquiries }) {
     link.remove();
     URL.revokeObjectURL(url);
   };
+
+  if (!isAuthenticated) {
+    return (
+      <PageLayout>
+        <main className="info-page admin-login-page">
+          <form className="info-card admin-login" onSubmit={handleLogin}>
+            <p className="eyebrow">PIMS INFOTECH</p>
+            <h1>Admin login</h1>
+            <p>Sign in to review, update, export, or remove customer enquiries.</p>
+            <label>
+              Username
+              <input value={login.username} onChange={(event) => setLogin({ ...login, username: event.target.value })} autoComplete="username" required />
+            </label>
+            <label>
+              Password
+              <input type="password" value={login.password} onChange={(event) => setLogin({ ...login, password: event.target.value })} autoComplete="current-password" required />
+            </label>
+            {loginError && <p className="status login-error">{loginError}</p>}
+            <button type="submit" className="btn btn-primary">Sign in</button>
+          </form>
+        </main>
+      </PageLayout>
+    );
+  }
 
   return (
     <PageLayout>
@@ -1757,7 +1995,7 @@ function PageLayout({ children }) {
             <Link to="/about">About</Link>
             <Link to="/services">Services</Link>
             <Link to="/admin">Admin</Link>
-            <a href="#contact">Contact</a>
+            <Link to="/contact">Contact</Link>
           </nav>
           <div className="topbar-actions">
             <Link className="text-link" to="/privacy">Privacy</Link>
@@ -1785,6 +2023,7 @@ function PageLayout({ children }) {
         </div>
       </header>
       {children}
+      <Chatbot />
       <footer className="site-footer">
         <div>
           <h4>Company</h4>
@@ -1817,9 +2056,230 @@ function PageLayout({ children }) {
             <li><a href="tel:+917291852216">+91 72918 52216</a></li>
             <li>Noida, Uttar Pradesh</li>
           </ul>
+          <div className="footer-socials">
+            <h4>Follow Us</h4>
+          <div className="social-links" aria-label="Social media links">
+            <a href="https://www.linkedin.com/company/pims-infotech/" target="_blank" rel="noreferrer" aria-label="LinkedIn" title="LinkedIn"><span aria-hidden="true">in</span></a>
+            <a href="https://x.com/pimsinfotech" target="_blank" rel="noreferrer" aria-label="X" title="X"><span aria-hidden="true">X</span></a>
+            <a href="https://www.youtube.com/@PimsInfotech" target="_blank" rel="noreferrer" aria-label="YouTube" title="YouTube"><span aria-hidden="true">▶</span></a>
+            <a href="https://www.instagram.com/pimsinfotech/" target="_blank" rel="noreferrer" aria-label="Instagram" title="Instagram"><span aria-hidden="true">◎</span></a>
+            <a href="https://www.facebook.com/pimsinfotech" target="_blank" rel="noreferrer" aria-label="Facebook" title="Facebook"><span aria-hidden="true">f</span></a>
+            <a href="https://wa.me/917291852216" target="_blank" rel="noreferrer" aria-label="WhatsApp" title="WhatsApp"><span aria-hidden="true">◔</span></a>
+          </div>
+          </div>
         </div>
+        <p className="footer-credit">&copy; 2026 PimsInfotech. All rights reserved. Designed &amp; developed by <strong>PimsInfotech Pvt Ltd.</strong></p>
       </footer>
     </>
+  );
+}
+
+function AboutPage() {
+  return (
+    <PageLayout>
+      <main className="info-page detail-page">
+        <section className="detail-hero">
+          <p className="eyebrow">PIMS INFOTECH</p>
+          <h1>Technology that makes business feel simpler.</h1>
+          <p> Pims Infotech partners with ambitious teams to turn complex operational needs into dependable digital products, measurable growth systems, and practical automation.</p>
+        </section>
+        <section className="detail-grid">
+          <article className="detail-panel">
+            <h2>What we believe</h2>
+            <p>Good technology should remove friction, make decisions clearer, and give people more time for work that matters. We combine product thinking, engineering discipline, and growth strategy so every solution has a useful purpose beyond launch day.</p>
+            <p>Our work is collaborative and transparent. We clarify the outcome first, share progress in small milestones, and build systems that can evolve as your customers and team grow.</p>
+          </article>
+          <article className="detail-panel">
+            <h2>How we work</h2>
+            <ul className="detail-list">
+              <li><strong>Discover:</strong> understand your users, process, constraints, and success measures.</li>
+              <li><strong>Shape:</strong> turn the opportunity into a clear product, campaign, or automation plan.</li>
+              <li><strong>Build:</strong> deliver tested, maintainable work in focused iterations.</li>
+              <li><strong>Improve:</strong> support, monitor, and optimize the solution after release.</li>
+            </ul>
+          </article>
+        </section>
+        <section className="detail-panel">
+          <h2>Who we help</h2>
+          <p>We work with startups, retailers, healthcare teams, educators, real estate businesses, and SaaS companies that need a capable technology partner without unnecessary complexity.</p>
+          <div className="industry-list">{industries.map((industry) => <span className="industry-chip" key={industry}>{industry}</span>)}</div>
+        </section>
+        <section className="detail-grid">
+          <article className="detail-panel">
+            <h2>Our capabilities</h2>
+            <p>Custom web software, cloud and DevOps, AI automation, digital marketing, Google Ads, Meta Ads, SEO, content and branding, plus practical PDF, document, image, and writing utilities.</p>
+          </article>
+          <article className="detail-panel">
+            <h2>Our commitment</h2>
+            <ul className="detail-list">{trustPoints.map((point) => <li key={point}>{point}</li>)}</ul>
+          </article>
+        </section>
+      </main>
+    </PageLayout>
+  );
+}
+
+function ContactPage() {
+  return (
+    <PageLayout>
+      <main className="info-page detail-page">
+        <section className="detail-hero">
+          <p className="eyebrow">LET'S TALK</p>
+          <h1>Bring us the challenge. We will help shape the next step.</h1>
+          <p>Tell us what you are trying to improve, launch, automate, or grow. We will review the context and respond with a practical direction for the work.</p>
+          <div className="hero-actions"><Link className="btn btn-primary" to="/#contact">Open enquiry form</Link><a className="btn btn-secondary" href="mailto:contact@pimsinfotech.com">Email us</a></div>
+        </section>
+        <section className="detail-grid contact-details">
+          <article className="detail-panel"><h2>Direct contact</h2><p><strong>Email</strong><br /><a href="mailto:contact@pimsinfotech.com">contact@pimsinfotech.com</a></p><p><strong>Phone</strong><br /><a href="tel:+917291852216">+91 72918 52216</a></p><p><strong>Location</strong><br />Noida, Uttar Pradesh, India</p></article>
+          <article className="detail-panel"><h2>What to include</h2><ul className="detail-list"><li>What you are building or improving</li><li>Your timeline and preferred launch window</li><li>The audience or team who will use it</li><li>Any existing tools, files, or constraints</li></ul></article>
+        </section>
+        <section className="detail-panel"><h2>What happens next</h2><div className="outcomes-grid"><div className="outcome-card"><strong>01</strong><span>We listen</span><p>We review your enquiry and identify the real priority behind the request.</p></div><div className="outcome-card"><strong>02</strong><span>We clarify</span><p>We ask focused questions around scope, timing, users, and measurable outcomes.</p></div><div className="outcome-card"><strong>03</strong><span>We propose</span><p>We recommend a sensible first step, delivery approach, and support path.</p></div></div></section>
+      </main>
+    </PageLayout>
+  );
+}
+
+function ServicesPage() {
+  return (
+    <PageLayout>
+      <main className="info-page detail-page services-page">
+        <section className="detail-hero">
+          <p className="eyebrow">WHAT WE DO</p>
+          <h1>Practical technology and growth systems for your next stage.</h1>
+          <p>From the first idea to the work that follows launch, we bring strategy, design, engineering, automation, and measurable marketing into one focused delivery partner.</p>
+          <div className="hero-actions"><Link className="btn btn-primary" to="/contact">Discuss your project</Link><Link className="btn btn-secondary" to="/about">Meet the team</Link></div>
+        </section>
+
+        <section className="service-detail-grid">
+          {services.map((service) => (
+            <article className="service-detail-card" key={service.title}>
+              <img src={service.image} alt={service.title} loading="lazy" />
+              <div className="service-detail-content">
+                <span className="chip">{service.badge}</span>
+                <h2>{service.title}</h2>
+                <p>{service.description}</p>
+                <p className="service-detail-copy">{service.details}</p>
+                <Link className="text-link" to="/contact">Plan this service →</Link>
+              </div>
+            </article>
+          ))}
+        </section>
+
+        <section className="detail-panel">
+          <div className="section-heading detail-heading">
+            <div><p className="eyebrow">DELIVERY METHOD</p><h2>A clear path from question to outcome</h2></div>
+          </div>
+          <div className="process-detail-grid">
+            {processSteps.map((step, index) => (
+              <article className="process-detail-card" key={step.title}>
+                <span className="step-number">0{index + 1}</span>
+                <div className="card-icon">{step.icon}</div>
+                <h3>{step.title}</h3>
+                <p>{step.description}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="detail-grid">
+          <article className="detail-panel">
+            <p className="eyebrow">BUILT FOR REAL WORK</p>
+            <h2>What you can expect from a partnership</h2>
+            <ul className="detail-list">{trustPoints.map((point) => <li key={point}>{point}</li>)}</ul>
+          </article>
+          <article className="detail-panel">
+            <p className="eyebrow">MEASURABLE IMPACT</p>
+            <h2>Outcomes that matter beyond launch</h2>
+            <div className="outcomes-grid">{businessOutcomes.map((outcome) => <div className="outcome-card" key={outcome.label}><strong>{outcome.value}</strong><span>{outcome.label}</span><p>{outcome.detail}</p></div>)}</div>
+          </article>
+        </section>
+
+        <section className="detail-cta">
+          <div><p className="eyebrow">READY WHEN YOU ARE</p><h2>Start with the problem you want solved.</h2><p>We can help you choose the right first step, scope a focused engagement, and build from there.</p></div>
+          <Link className="btn btn-primary" to="/contact">Start a conversation</Link>
+        </section>
+      </main>
+    </PageLayout>
+  );
+}
+
+function PrivacyPage() {
+  const privacyFlow = [
+    { number: '01', title: 'You choose to share', text: 'You provide information through an enquiry, contact message, or optional tool interaction.' },
+    { number: '02', title: 'We receive it', text: 'We use the information to understand your request, respond, and provide the service you asked for.' },
+    { number: '03', title: 'We protect it', text: 'Access is limited to the people and systems that need the information for support or delivery.' },
+    { number: '04', title: 'We retain it carefully', text: 'We keep information only for as long as it is useful for support, records, legal duties, or agreed work.' },
+    { number: '05', title: 'You stay in control', text: 'You can ask what we hold, request corrections, or contact us about deletion and privacy choices.' }
+  ];
+
+  return (
+    <PageLayout>
+      <main className="info-page detail-page privacy-page">
+        <section className="detail-hero privacy-hero">
+          <p className="eyebrow">YOUR TRUST MATTERS</p>
+          <h1>A clear, respectful approach to your information.</h1>
+          <p>We collect and use personal information only when it helps us respond to you, deliver a requested service, maintain the platform, or meet a legitimate business and legal responsibility.</p>
+          <div className="privacy-badges"><span>Purpose-led collection</span><span>Limited access</span><span>Clear choices</span></div>
+        </section>
+
+        <section className="detail-panel">
+          <div className="section-heading detail-heading"><div><p className="eyebrow">PRIVACY AT A GLANCE</p><h2>What happens to information you share</h2></div></div>
+          <div className="privacy-flow">
+            {privacyFlow.map((step, index) => (
+              <article className="privacy-flow-step" key={step.number}>
+                <span className="privacy-flow-number">{step.number}</span>
+                <div><h3>{step.title}</h3><p>{step.text}</p></div>
+                {index < privacyFlow.length - 1 && <span className="privacy-flow-arrow" aria-hidden="true">→</span>}
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="detail-grid">
+          <article className="detail-panel">
+            <p className="eyebrow">INFORMATION WE MAY HANDLE</p>
+            <h2>Only what supports the work</h2>
+            <ul className="detail-list">
+              <li><strong>Contact details:</strong> name, email address, phone number, company, and location when you provide them.</li>
+              <li><strong>Project context:</strong> your requirements, timeline, budget range, preferences, and message.</li>
+              <li><strong>Service inputs:</strong> files or text you intentionally upload to use a browser-based utility.</li>
+              <li><strong>Basic technical data:</strong> limited diagnostics needed to keep the website reliable and secure.</li>
+            </ul>
+          </article>
+          <article className="detail-panel">
+            <p className="eyebrow">WHY WE USE IT</p>
+            <h2>Purpose before process</h2>
+            <ul className="detail-list">
+              <li>Respond to questions, enquiries, and support requests.</li>
+              <li>Plan, deliver, and improve agreed products or services.</li>
+              <li>Protect the website, prevent misuse, and troubleshoot failures.</li>
+              <li>Meet accounting, legal, compliance, or dispute-resolution duties.</li>
+            </ul>
+          </article>
+        </section>
+
+        <section className="detail-grid">
+          <article className="detail-panel">
+            <p className="eyebrow">SECURITY PRACTICES</p>
+            <h2>Designed to reduce unnecessary exposure</h2>
+            <p>We use access controls, careful handling, reasonable technical safeguards, and limited data access to reduce the chance of unauthorized use. No online service can promise absolute security, but we treat protection as an ongoing operational responsibility.</p>
+          </article>
+          <article className="detail-panel">
+            <p className="eyebrow">YOUR OPTIONS</p>
+            <h2>You can ask for clarity</h2>
+            <p>You may contact us to ask what personal information we hold about you, request a correction, ask us to remove information where appropriate, or withdraw a voluntary communication preference.</p>
+            <a className="btn btn-secondary privacy-contact-button" href="mailto:contact@pimsinfotech.com?subject=Privacy%20question">Ask a privacy question</a>
+          </article>
+        </section>
+
+        <section className="detail-panel privacy-note">
+          <p className="eyebrow">IMPORTANT NOTE</p>
+          <h2>Browser tools keep your work close to you</h2>
+          <p>Many of the document, image, writing, and design utilities run directly in your browser. Files are not sent to our servers by those local processing actions unless a feature explicitly says otherwise. Please avoid uploading confidential information when a tool does not require it.</p>
+          <p className="privacy-updated">This policy may be updated as the website and services evolve. The latest version is always published on this page.</p>
+        </section>
+      </main>
+    </PageLayout>
   );
 }
 
@@ -1835,6 +2295,89 @@ function InfoPage({ title, body }) {
         </div>
       </main>
     </PageLayout>
+  );
+}
+
+function getChatbotReply(message) {
+  const query = message.toLowerCase();
+  if (query.includes('contact') || query.includes('phone') || query.includes('email')) {
+    return 'You can reach Pims Infotech at contact@pimsinfotech.com or +91 72918 52216. The Contact link in the header opens the enquiry form.';
+  }
+  if (query.includes('writing') || query.includes('grammar') || query.includes('grammarly')) {
+    return 'Writing Assistant checks common spelling, punctuation, and grammar issues locally. Paste your text, select the tool, and click Run Tool for a suggested version.';
+  }
+  if (query.includes('design') || query.includes('canvas') || query.includes('canva')) {
+    return 'Design Canvas lets you edit a message, supporting line, template, background, and accent color, then export the result as a PNG.';
+  }
+  if (query.includes('paraphrase') || query.includes('quillbot') || query.includes('rewrite')) {
+    return 'AI Paraphraser rewrites pasted text in Balanced, Formal, or Concise style. Use Copy paraphrase to take the result with you.';
+  }
+  if (query.includes('service') || query.includes('software') || query.includes('marketing')) {
+    return 'Pims Infotech provides custom software, cloud and DevOps, AI automation, digital marketing, Google Ads, Meta Ads, SEO, and content branding.';
+  }
+  if (query.includes('pdf') || query.includes('image') || query.includes('tool')) {
+    return 'The Utilities section includes PDF, image, document, writing, and design tools. Search the section to find a specific tool.';
+  }
+  return 'I can help with Pims Infotech services, utilities, Writing Assistant, Design Canvas, AI Paraphraser, or contact details. What would you like to know?';
+}
+
+function Chatbot() {
+  const [isOpen, setIsOpen] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [messages, setMessages] = useState([
+    { id: 1, sender: 'bot', text: 'Hi, I’m the Pims Infotech assistant. How can I help?' }
+  ]);
+  const messagesEndRef = useRef(null);
+
+  useEffect(() => {
+    if (isOpen) messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, isOpen]);
+
+  const sendMessage = (text = draft) => {
+    const trimmedText = text.trim();
+    if (!trimmedText) return;
+    setMessages((current) => [
+      ...current,
+      { id: Date.now(), sender: 'user', text: trimmedText },
+      { id: Date.now() + 1, sender: 'bot', text: getChatbotReply(trimmedText) }
+    ]);
+    setDraft('');
+  };
+
+  return (
+    <div className="chatbot">
+      {isOpen && (
+        <section className="chatbot-panel" aria-label="Pims Infotech assistant">
+          <div className="chatbot-header">
+            <span className="chatbot-ai-icon" aria-hidden="true">✦</span>
+            <div>
+              <strong>Pims Assistant</strong>
+              <span>Local help, always ready</span>
+            </div>
+            <button type="button" className="chatbot-close" onClick={() => setIsOpen(false)} aria-label="Close assistant">×</button>
+          </div>
+          <div className="chatbot-messages" aria-live="polite">
+            {messages.map((message) => (
+              <p key={message.id} className={`chatbot-message ${message.sender}`}>{message.text}</p>
+            ))}
+            <div ref={messagesEndRef} />
+          </div>
+          <div className="chatbot-prompts">
+            <button type="button" onClick={() => sendMessage('What services do you offer?')}>Services</button>
+            <button type="button" onClick={() => sendMessage('How do I use the writing tools?')}>Writing tools</button>
+            <button type="button" onClick={() => sendMessage('How can I contact you?')}>Contact</button>
+          </div>
+          <form className="chatbot-form" onSubmit={(event) => { event.preventDefault(); sendMessage(); }}>
+            <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask a question..." aria-label="Ask the assistant" />
+            <button type="submit" className="chatbot-send" aria-label="Send message">➤</button>
+          </form>
+        </section>
+      )}
+      <button type="button" className="chatbot-toggle" onClick={() => setIsOpen((current) => !current)} aria-label={isOpen ? 'Close assistant' : 'Open assistant'} title="Open assistant">
+          <span className="chatbot-ai-icon" aria-hidden="true">✦</span>
+        <span>Ask Pims</span>
+      </button>
+    </div>
   );
 }
 
