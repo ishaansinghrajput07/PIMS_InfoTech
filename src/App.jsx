@@ -565,18 +565,24 @@ async function createSignatureImage(file) {
   return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
 }
 
-function buildAtsReport(text) {
-  const normalized = text.toLowerCase();
+function calculateAtsScore(text) {
+  const normalized = text.toLowerCase().replace(/\s+/g, ' ').trim();
+  const words = normalized ? normalized.split(/\s+/) : [];
   const checks = [
-    ['Contact details', /@|\+?\d[\d\s-]{7,}/.test(text)],
-    ['Professional summary', /summary|profile|objective/.test(normalized)],
-    ['Work experience', /experience|employment|work history/.test(normalized)],
-    ['Education', /education|degree|university|college/.test(normalized)],
-    ['Skills', /skills|technical skills|competencies/.test(normalized)],
-    ['Action language', /managed|built|created|improved|led|delivered|developed/.test(normalized)]
+    { label: 'Contact details', weight: 15, passed: /[\w.+-]+@[\w.-]+\.[a-z]{2,}/i.test(text) && /(?:\+?\d[\d\s().-]{7,})/.test(text) },
+    { label: 'Professional summary', weight: 12, passed: /\b(?:summary|professional summary|profile|objective)\b/.test(normalized) },
+    { label: 'Work experience', weight: 18, passed: /\b(?:experience|employment|work history|professional experience)\b/.test(normalized) },
+    { label: 'Education or certifications', weight: 12, passed: /\b(?:education|degree|university|college|certification)\b/.test(normalized) },
+    { label: 'Skills and technologies', weight: 15, passed: /\b(?:skills|technical skills|core competencies|technologies)\b/.test(normalized) },
+    { label: 'Action verbs', weight: 10, passed: /\b(?:managed|built|created|improved|led|delivered|developed|increased|reduced|launched)\b/.test(normalized) },
+    { label: 'Measurable achievements', weight: 8, passed: /\b\d+(?:%|\+|k|m| years?| months?)\b/.test(normalized) },
+    { label: 'Readable length (150-1200 words)', weight: 5, passed: words.length >= 150 && words.length <= 1200 },
+    { label: 'ATS-safe formatting', weight: 5, passed: !/(?:table|column|header|footer|text box|graphic)/.test(normalized) }
   ];
-  const score = Math.round((checks.filter(([, passed]) => passed).length / checks.length) * 100);
-  return `ATS Resume Report\n\nScore: ${score}/100\n\n${checks.map(([label, passed]) => `${passed ? '[PASS]' : '[TODO]'} ${label}`).join('\n')}\n\nTip: Use standard headings, measurable achievements, and keywords from the target job description.`;
+  return {
+    score: Math.min(100, checks.reduce((total, check) => total + (check.passed ? check.weight : 0), 0)),
+    improvements: checks.filter((check) => !check.passed).map((check) => check.label)
+  };
 }
 
 function ToolWorkspace({ tool }) {
@@ -607,6 +613,7 @@ function ToolWorkspace({ tool }) {
   });
   const [files, setFiles] = useState([]);
   const [status, setStatus] = useState('');
+  const [atsResult, setAtsResult] = useState(null);
 
   const updateField = (field, value) => setForm((current) => ({ ...current, [field]: value }));
 
@@ -623,9 +630,11 @@ function ToolWorkspace({ tool }) {
           return;
         }
         const text = files[0].type === 'application/pdf' ? await extractPdfText(files[0]) : await files[0].text();
-        downloadText(buildAtsReport(text), 'ats-resume-report.txt');
-        setStatus('ATS report generated and downloaded.');
+        const atsResult = calculateAtsScore(text);
+        setAtsResult(atsResult);
+        setStatus(`ATS Score: ${atsResult.score}/100`);
       } else if (tool.title === 'Resume Maker') {
+        setAtsResult(null);
         const filename = `${(form.name || 'resume').toLowerCase().replace(/\s+/g, '-') || 'resume'}.html`;
         downloadText(buildResumeHtml(form), filename);
         setStatus('Resume draft generated successfully.');
@@ -634,6 +643,7 @@ function ToolWorkspace({ tool }) {
         downloadText(buildBiodataHtml(form), filename);
         setStatus('Biodata document generated successfully.');
       } else if (['Image Compressor', 'Resize Image', 'Crop Image', 'Rotate Image', 'Image Filters', 'Background Remover'].includes(tool.title)) {
+        setAtsResult(null);
         if (!files[0]) {
           setStatus('Please choose an image file first.');
           return;
@@ -655,6 +665,7 @@ function ToolWorkspace({ tool }) {
         downloadBlob(blob, fileName);
         setStatus(`Processed image saved as ${fileName}.`);
       } else if (tool.title === 'JPG to PDF') {
+        setAtsResult(null);
         if (!files.length) {
           setStatus('Please choose one or more image files first.');
           return;
@@ -663,6 +674,7 @@ function ToolWorkspace({ tool }) {
         downloadBlob(new Blob([buffer], { type: 'application/pdf' }), 'converted-images.pdf');
         setStatus('Images converted into a PDF.');
       } else if (tool.title === 'PDF to JPG') {
+        setAtsResult(null);
         if (!files[0]) {
           setStatus('Please choose a PDF file first.');
           return;
@@ -671,6 +683,7 @@ function ToolWorkspace({ tool }) {
         images.forEach((blob, index) => downloadBlob(blob, `page-${index + 1}.jpg`));
         setStatus('PDF pages converted to JPG files.');
       } else if (tool.title === 'Compress PDF') {
+        setAtsResult(null);
         if (!files[0]) {
           setStatus('Please choose a PDF file first.');
           return;
@@ -679,6 +692,7 @@ function ToolWorkspace({ tool }) {
         downloadBlob(new Blob([buffer], { type: 'application/pdf' }), 'compressed.pdf');
         setStatus('PDF prepared for download.');
       } else if (tool.title === 'Merge PDF' || tool.title === 'PDF Merge') {
+        setAtsResult(null);
         if (!files.length) {
           setStatus('Please choose at least two PDF files.');
           return;
@@ -687,6 +701,7 @@ function ToolWorkspace({ tool }) {
         downloadBlob(new Blob([buffer], { type: 'application/pdf' }), 'merged.pdf');
         setStatus('PDF files merged successfully.');
       } else if (tool.title === 'Split PDF' || tool.title === 'PDF Split') {
+        setAtsResult(null);
         if (!files[0]) {
           setStatus('Please choose a PDF file first.');
           return;
@@ -695,6 +710,7 @@ function ToolWorkspace({ tool }) {
         chunks.forEach((chunk, index) => downloadBlob(new Blob([chunk], { type: 'application/pdf' }), `page-${index + 1}.pdf`));
         setStatus('PDF split into individual page files.');
       } else if (['Organize Pages', 'Rotate Pages', 'Add Page Numbers', 'Watermark PDF'].includes(tool.title)) {
+        setAtsResult(null);
         if (!files[0]) {
           setStatus('Please choose a PDF file first.');
           return;
@@ -712,6 +728,7 @@ function ToolWorkspace({ tool }) {
         downloadBlob(new Blob([buffer], { type: 'application/pdf' }), `${tool.title.toLowerCase().replace(/\s+/g, '-')}.pdf`);
         setStatus(`${tool.title} completed successfully.`);
       } else if (tool.title === 'PDF to Text' || tool.title === 'PDF to Excel') {
+        setAtsResult(null);
         if (!files[0]) {
           setStatus('Please choose a PDF file first.');
           return;
@@ -721,6 +738,7 @@ function ToolWorkspace({ tool }) {
         downloadText(output, tool.title === 'PDF to Excel' ? 'extracted-table.csv' : 'extracted-text.txt');
         setStatus(`${tool.title} export downloaded.`);
       } else if (tool.title === 'Digital Signature') {
+        setAtsResult(null);
         if (!files[0]) {
           setStatus('Please choose a signature image first.');
           return;
@@ -728,6 +746,7 @@ function ToolWorkspace({ tool }) {
         downloadBlob(await createSignatureImage(files[0]), 'transparent-signature.png');
         setStatus('Background-free signature downloaded as PNG.');
       } else if (tool.title === 'JPG to PNG Converter' || tool.title === 'PNG to JPG Converter' || tool.title === 'WEBP to JPG Converter' || tool.title === 'SVG to PNG Converter' || tool.title === 'BMP to JPG Converter') {
+        setAtsResult(null);
         if (!files[0]) {
           setStatus('Please choose an image file first.');
           return;
@@ -738,8 +757,10 @@ function ToolWorkspace({ tool }) {
         downloadBlob(blob, `${files[0].name.replace(/\.[^.]+$/, '')}.${isPng ? 'png' : 'jpg'}`);
         setStatus('Image converted successfully.');
       } else if (['PDF to Word', 'Word to PDF', 'PDF to PowerPoint', 'PowerPoint to PDF'].includes(tool.title)) {
+        setAtsResult(null);
         setStatus('This browser-only version cannot preserve Office document layouts. Use PDF to Text or JPG to PDF for a reliable export.');
       } else if (tool.title === 'Protect PDF' || tool.title === 'Unlock PDF') {
+        setAtsResult(null);
         setStatus('PDF encryption requires a server-side processor and is not performed in this browser-only app.');
       }
     } catch (error) {
@@ -907,6 +928,16 @@ function ToolWorkspace({ tool }) {
         <button type="button" className="btn btn-primary" onClick={handleGenerate}>Run Tool</button>
       </div>
       {status && <p className="tool-status">{status}</p>}
+      {tool.title === 'ATS Resume Checker' && atsResult && (
+        <div className="tool-status">
+          <strong>{atsResult.improvements.length ? 'Parameters to improve' : 'Maximum score achieved'}</strong>
+          {atsResult.improvements.length > 0 && (
+            <ul>
+              {atsResult.improvements.map((improvement) => <li key={improvement}>{improvement}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }
