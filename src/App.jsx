@@ -615,6 +615,12 @@ function ToolWorkspace({ tool }) {
   const [status, setStatus] = useState('');
   const [atsResult, setAtsResult] = useState(null);
 
+  useEffect(() => {
+    setFiles([]);
+    setStatus('');
+    setAtsResult(null);
+  }, [tool.title]);
+
   const updateField = (field, value) => setForm((current) => ({ ...current, [field]: value }));
 
   const handleFileSelection = (event) => {
