@@ -797,7 +797,10 @@ h1 { font-size: clamp(2.6rem, 5vw, 4.4rem); line-height: 1.05; margin: 0 0 18px;
 .tool-form { display: flex; flex-direction: column; gap: 10px; }
 .tool-form label { display: flex; flex-direction: column; gap: 6px; font-size: 0.95rem; color: #d7e3f4; }
 .tool-form input, .tool-form textarea, .tool-form select { padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.16); background: rgba(255,255,255,0.08); color: white; }
-.tool-actions { margin-top: 4px; }
+.tool-actions { margin-top: 4px; display: flex; align-items: center; gap: 10px; }
+.tool-actions .btn:disabled { cursor: wait; opacity: 0.8; }
+.processing-spinner { width: 16px; height: 16px; display: inline-block; border: 2px solid rgba(255,255,255,0.35); border-top-color: currentColor; border-radius: 50%; animation: tool-spin 0.8s linear infinite; }
+@keyframes tool-spin { to { transform: rotate(360deg); } }
 .tool-status { color: #8ee9ff; margin: 0; }
 .contact-section { display: grid; grid-template-columns: 0.9fr 1.1fr; gap: 24px; align-items: start; }
 .contact-list { list-style: none; padding: 0; margin: 12px 0 0; color: #d7e3f4; }

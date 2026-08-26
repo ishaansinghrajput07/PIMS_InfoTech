@@ -686,11 +686,13 @@ function ToolWorkspace({ tool }) {
   const [files, setFiles] = useState([]);
   const [status, setStatus] = useState('');
   const [atsResult, setAtsResult] = useState(null);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   useEffect(() => {
     setFiles([]);
     setStatus('');
     setAtsResult(null);
+    setIsProcessing(false);
   }, [tool.title]);
 
   const updateField = (field, value) => setForm((current) => ({ ...current, [field]: value }));
@@ -701,6 +703,10 @@ function ToolWorkspace({ tool }) {
   };
 
   const handleGenerate = async () => {
+    if (isProcessing) return;
+    const startedAt = Date.now();
+    setIsProcessing(true);
+    setStatus('Processing...');
     try {
       if (tool.title === 'ATS Resume Checker') {
         if (!files[0]) {
@@ -876,6 +882,9 @@ function ToolWorkspace({ tool }) {
     } catch (error) {
       console.error(error);
       setStatus('The tool could not complete the action. Please try again.');
+    } finally {
+      await new Promise((resolve) => setTimeout(resolve, Math.max(0, 2000 - (Date.now() - startedAt))));
+      setIsProcessing(false);
     }
   };
 
@@ -1035,7 +1044,10 @@ function ToolWorkspace({ tool }) {
       )}
 
       <div className="tool-actions">
-        <button type="button" className="btn btn-primary" onClick={handleGenerate}>Run Tool</button>
+        <button type="button" className="btn btn-primary" onClick={handleGenerate} disabled={isProcessing}>
+          {isProcessing && <span className="processing-spinner" aria-hidden="true" />}
+          {isProcessing ? 'Processing...' : 'Run Tool'}
+        </button>
       </div>
       {status && <p className="tool-status">{status}</p>}
       {tool.title === 'ATS Resume Checker' && atsResult && (
