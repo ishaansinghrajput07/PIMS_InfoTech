@@ -430,12 +430,32 @@ async function processImageFile(file, options) {
   const dataUrl = await readFileAsDataUrl(file);
   const image = await loadImage(dataUrl);
   const canvas = document.createElement('canvas');
+  const angle = ((Number(options.angle) || 0) % 360 + 360) % 360;
   const targetWidth = Number(options.width) || image.width;
   const targetHeight = Number(options.height) || image.height;
-  canvas.width = targetWidth;
-  canvas.height = targetHeight;
+  const rotated = angle === 90 || angle === 270;
+  canvas.width = rotated ? targetHeight : targetWidth;
+  canvas.height = rotated ? targetWidth : targetHeight;
   const context = canvas.getContext('2d');
-  context.drawImage(image, 0, 0, targetWidth, targetHeight);
+  if (options.filter === 'grayscale') context.filter = 'grayscale(1)';
+  if (options.filter === 'sepia') context.filter = 'sepia(1)';
+  if (options.filter === 'blur') context.filter = 'blur(3px)';
+  context.translate(canvas.width / 2, canvas.height / 2);
+  context.rotate((angle * Math.PI) / 180);
+  if (options.removeBackground) context.globalCompositeOperation = 'destination-over';
+  if (options.crop) {
+    context.drawImage(image, Number(options.cropX) || 0, Number(options.cropY) || 0, targetWidth, targetHeight, -targetWidth / 2, -targetHeight / 2, targetWidth, targetHeight);
+  } else {
+    context.drawImage(image, -targetWidth / 2, -targetHeight / 2, targetWidth, targetHeight);
+  }
+  if (options.removeBackground) {
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+    for (let index = 0; index < pixels.data.length; index += 4) {
+      if (pixels.data[index] > 235 && pixels.data[index + 1] > 235 && pixels.data[index + 2] > 235) pixels.data[index + 3] = 0;
+    }
+    context.putImageData(pixels, 0, 0);
+  }
   const mimeType = options.format === 'png' ? 'image/png' : options.format === 'jpeg' ? 'image/jpeg' : 'image/webp';
   const quality = options.format === 'png' ? undefined : Number(options.quality || 0.8);
   return new Promise((resolve) => canvas.toBlob(resolve, mimeType, quality));
@@ -499,6 +519,66 @@ async function convertPdfToImages(file) {
   return images;
 }
 
+async function extractPdfText(file) {
+  const loadingTask = getDocument({ data: await file.arrayBuffer() });
+  const pdf = await loadingTask.promise;
+  const pages = [];
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum += 1) {
+    const page = await pdf.getPage(pageNum);
+    const content = await page.getTextContent();
+    pages.push(content.items.map((item) => item.str).join(' '));
+  }
+  return pages.join('\n\n');
+}
+
+async function updatePdfPages(file, options) {
+  const sourcePdf = await PDFDocument.load(await file.arrayBuffer());
+  const pageNumbers = options.pageNumbers || sourcePdf.getPageIndices();
+  const outputPdf = await PDFDocument.create();
+  const copiedPages = await outputPdf.copyPages(sourcePdf, pageNumbers);
+  copiedPages.forEach((page, index) => {
+    if (options.rotate) page.setRotation({ angle: options.rotate, type: 'degrees' });
+    if (options.numberPages) {
+      page.drawText(String(index + 1), { x: 24, y: 18, size: 10 });
+    }
+    if (options.watermark) {
+      page.drawText(options.watermark, { x: 40, y: page.getHeight() / 2, size: 24, opacity: 0.2, rotate: { angle: 45, type: 'degrees' } });
+    }
+  });
+  copiedPages.forEach((page) => outputPdf.addPage(page));
+  return outputPdf.save();
+}
+
+async function createSignatureImage(file) {
+  const dataUrl = await readFileAsDataUrl(file);
+  const image = await loadImage(dataUrl);
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const context = canvas.getContext('2d');
+  context.drawImage(image, 0, 0);
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+  for (let index = 0; index < pixels.data.length; index += 4) {
+    if (pixels.data[index] > 235 && pixels.data[index + 1] > 235 && pixels.data[index + 2] > 235) pixels.data[index + 3] = 0;
+  }
+  context.putImageData(pixels, 0, 0);
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+}
+
+function buildAtsReport(text) {
+  const normalized = text.toLowerCase();
+  const checks = [
+    ['Contact details', /@|\+?\d[\d\s-]{7,}/.test(text)],
+    ['Professional summary', /summary|profile|objective/.test(normalized)],
+    ['Work experience', /experience|employment|work history/.test(normalized)],
+    ['Education', /education|degree|university|college/.test(normalized)],
+    ['Skills', /skills|technical skills|competencies/.test(normalized)],
+    ['Action language', /managed|built|created|improved|led|delivered|developed/.test(normalized)]
+  ];
+  const score = Math.round((checks.filter(([, passed]) => passed).length / checks.length) * 100);
+  return `ATS Resume Report\n\nScore: ${score}/100\n\n${checks.map(([label, passed]) => `${passed ? '[PASS]' : '[TODO]'} ${label}`).join('\n')}\n\nTip: Use standard headings, measurable achievements, and keywords from the target job description.`;
+}
+
 function ToolWorkspace({ tool }) {
   const [form, setForm] = useState({
     name: '',
@@ -516,8 +596,14 @@ function ToolWorkspace({ tool }) {
     details: '',
     width: '1200',
     height: '1200',
+    cropX: '0',
+    cropY: '0',
     quality: '0.8',
-    format: 'webp'
+    format: 'webp',
+    angle: '90',
+    filter: 'none',
+    pageNumbers: '',
+    watermark: ''
   });
   const [files, setFiles] = useState([]);
   const [status, setStatus] = useState('');
@@ -531,7 +617,15 @@ function ToolWorkspace({ tool }) {
 
   const handleGenerate = async () => {
     try {
-      if (tool.title === 'Resume Maker') {
+      if (tool.title === 'ATS Resume Checker') {
+        if (!files[0]) {
+          setStatus('Please choose a resume text, PDF, or document file first.');
+          return;
+        }
+        const text = files[0].type === 'application/pdf' ? await extractPdfText(files[0]) : await files[0].text();
+        downloadText(buildAtsReport(text), 'ats-resume-report.txt');
+        setStatus('ATS report generated and downloaded.');
+      } else if (tool.title === 'Resume Maker') {
         const filename = `${(form.name || 'resume').toLowerCase().replace(/\s+/g, '-') || 'resume'}.html`;
         downloadText(buildResumeHtml(form), filename);
         setStatus('Resume draft generated successfully.');
@@ -539,16 +633,22 @@ function ToolWorkspace({ tool }) {
         const filename = `${(form.groomName || 'biodata').toLowerCase().replace(/\s+/g, '-') || 'biodata'}.html`;
         downloadText(buildBiodataHtml(form), filename);
         setStatus('Biodata document generated successfully.');
-      } else if (tool.title === 'Image Compressor' || tool.title === 'Resize Image') {
+      } else if (['Image Compressor', 'Resize Image', 'Crop Image', 'Rotate Image', 'Image Filters', 'Background Remover'].includes(tool.title)) {
         if (!files[0]) {
           setStatus('Please choose an image file first.');
           return;
         }
         const blob = await processImageFile(files[0], {
-          width: Number(form.width) || 1200,
-          height: Number(form.height) || 1200,
+          width: tool.title === 'Crop Image' ? Number(form.width) || 800 : Number(form.width) || 1200,
+          height: tool.title === 'Crop Image' ? Number(form.height) || 800 : Number(form.height) || 1200,
           quality: Number(form.quality) || 0.8,
-          format: form.format
+          format: tool.title === 'Background Remover' ? 'png' : form.format,
+          angle: tool.title === 'Rotate Image' ? Number(form.angle) : 0,
+          filter: tool.title === 'Image Filters' ? form.filter : 'none',
+          removeBackground: tool.title === 'Background Remover',
+          crop: tool.title === 'Crop Image',
+          cropX: form.cropX,
+          cropY: form.cropY
         });
         const extension = form.format === 'png' ? 'png' : form.format === 'jpeg' ? 'jpeg' : 'webp';
         const fileName = `${(files[0].name || 'image').replace(/\.[^.]+$/, '')}.${extension}`;
@@ -578,7 +678,7 @@ function ToolWorkspace({ tool }) {
         const buffer = await compressPdf(files[0]);
         downloadBlob(new Blob([buffer], { type: 'application/pdf' }), 'compressed.pdf');
         setStatus('PDF prepared for download.');
-      } else if (tool.title === 'PDF Merge') {
+      } else if (tool.title === 'Merge PDF' || tool.title === 'PDF Merge') {
         if (!files.length) {
           setStatus('Please choose at least two PDF files.');
           return;
@@ -586,7 +686,7 @@ function ToolWorkspace({ tool }) {
         const buffer = await mergePdfFiles(files);
         downloadBlob(new Blob([buffer], { type: 'application/pdf' }), 'merged.pdf');
         setStatus('PDF files merged successfully.');
-      } else if (tool.title === 'PDF Split') {
+      } else if (tool.title === 'Split PDF' || tool.title === 'PDF Split') {
         if (!files[0]) {
           setStatus('Please choose a PDF file first.');
           return;
@@ -594,6 +694,53 @@ function ToolWorkspace({ tool }) {
         const chunks = await splitPdfFile(files[0]);
         chunks.forEach((chunk, index) => downloadBlob(new Blob([chunk], { type: 'application/pdf' }), `page-${index + 1}.pdf`));
         setStatus('PDF split into individual page files.');
+      } else if (['Organize Pages', 'Rotate Pages', 'Add Page Numbers', 'Watermark PDF'].includes(tool.title)) {
+        if (!files[0]) {
+          setStatus('Please choose a PDF file first.');
+          return;
+        }
+        const sourcePdf = await PDFDocument.load(await files[0].arrayBuffer());
+        const allPages = sourcePdf.getPageIndices();
+        const requestedPages = form.pageNumbers.split(',').map((value) => Number(value.trim()) - 1).filter((value) => Number.isInteger(value) && value >= 0 && value < allPages.length);
+        const pageNumbers = tool.title === 'Organize Pages' && requestedPages.length ? requestedPages : allPages;
+        const buffer = await updatePdfPages(files[0], {
+          pageNumbers,
+          rotate: tool.title === 'Rotate Pages' ? Number(form.angle) : 0,
+          numberPages: tool.title === 'Add Page Numbers',
+          watermark: tool.title === 'Watermark PDF' ? form.watermark : ''
+        });
+        downloadBlob(new Blob([buffer], { type: 'application/pdf' }), `${tool.title.toLowerCase().replace(/\s+/g, '-')}.pdf`);
+        setStatus(`${tool.title} completed successfully.`);
+      } else if (tool.title === 'PDF to Text' || tool.title === 'PDF to Excel') {
+        if (!files[0]) {
+          setStatus('Please choose a PDF file first.');
+          return;
+        }
+        const text = await extractPdfText(files[0]);
+        const output = tool.title === 'PDF to Excel' ? text.split('\n').map((line) => line.split(/\s{2,}|\t/).join(',')).join('\n') : text;
+        downloadText(output, tool.title === 'PDF to Excel' ? 'extracted-table.csv' : 'extracted-text.txt');
+        setStatus(`${tool.title} export downloaded.`);
+      } else if (tool.title === 'Digital Signature') {
+        if (!files[0]) {
+          setStatus('Please choose a signature image first.');
+          return;
+        }
+        downloadBlob(await createSignatureImage(files[0]), 'transparent-signature.png');
+        setStatus('Background-free signature downloaded as PNG.');
+      } else if (tool.title === 'JPG to PNG Converter' || tool.title === 'PNG to JPG Converter' || tool.title === 'WEBP to JPG Converter' || tool.title === 'SVG to PNG Converter' || tool.title === 'BMP to JPG Converter') {
+        if (!files[0]) {
+          setStatus('Please choose an image file first.');
+          return;
+        }
+        const isPng = tool.title === 'JPG to PNG Converter' || tool.title === 'SVG to PNG Converter';
+        const format = isPng ? 'png' : 'jpeg';
+        const blob = await processImageFile(files[0], { format, quality: 0.92 });
+        downloadBlob(blob, `${files[0].name.replace(/\.[^.]+$/, '')}.${isPng ? 'png' : 'jpg'}`);
+        setStatus('Image converted successfully.');
+      } else if (['PDF to Word', 'Word to PDF', 'PDF to PowerPoint', 'PowerPoint to PDF'].includes(tool.title)) {
+        setStatus('This browser-only version cannot preserve Office document layouts. Use PDF to Text or JPG to PDF for a reliable export.');
+      } else if (tool.title === 'Protect PDF' || tool.title === 'Unlock PDF') {
+        setStatus('PDF encryption requires a server-side processor and is not performed in this browser-only app.');
       }
     } catch (error) {
       console.error(error);
@@ -601,8 +748,9 @@ function ToolWorkspace({ tool }) {
     }
   };
 
-  const isImageTool = tool.title === 'Image Compressor' || tool.title === 'Resize Image';
-  const isPdfTool = ['JPG to PDF', 'PDF to JPG', 'Compress PDF', 'PDF Merge', 'PDF Split'].includes(tool.title);
+  const isImageTool = ['Image Compressor', 'Resize Image', 'Crop Image', 'Rotate Image', 'Image Filters', 'Background Remover'].includes(tool.title) || tool.title.includes('to PNG Converter') || tool.title.includes('to JPG Converter');
+  const isPdfTool = ['ATS Resume Checker', 'JPG to PDF', 'PDF to JPG', 'Compress PDF', 'PDF Merge', 'Merge PDF', 'PDF Split', 'Split PDF', 'Organize Pages', 'Rotate Pages', 'Add Page Numbers', 'Watermark PDF', 'PDF to Text', 'PDF to Excel', 'PDF to Word', 'Word to PDF', 'PDF to PowerPoint', 'PowerPoint to PDF'].includes(tool.title);
+  const isFileTool = isImageTool || isPdfTool || tool.title === 'Digital Signature';
 
   return (
     <div className="tool-workspace">
@@ -668,14 +816,26 @@ function ToolWorkspace({ tool }) {
         </div>
       )}
 
-      {(isImageTool || isPdfTool) && (
+      {isFileTool && (
         <div className="tool-form">
           <label>
             Choose file{isPdfTool && tool.title !== 'JPG to PDF' ? '' : 's'}
-            <input type="file" multiple={tool.title === 'JPG to PDF' || tool.title === 'PDF Merge'} onChange={handleFileSelection} accept={tool.title === 'PDF to JPG' || tool.title === 'Compress PDF' || tool.title === 'PDF Merge' || tool.title === 'PDF Split' ? '.pdf' : 'image/*'} />
+            <input type="file" multiple={tool.title === 'JPG to PDF' || tool.title === 'PDF Merge' || tool.title === 'Merge PDF'} onChange={handleFileSelection} accept={tool.title === 'ATS Resume Checker' ? '.pdf,.txt,.doc,.docx' : tool.title === 'Word to PDF' ? '.doc,.docx,.txt' : isPdfTool && tool.title !== 'JPG to PDF' ? '.pdf' : 'image/*'} />
           </label>
           {isImageTool && (
             <>
+              {tool.title === 'Crop Image' && (
+                <>
+                  <label>
+                    Crop X
+                    <input type="number" min="0" value={form.cropX} onChange={(event) => updateField('cropX', event.target.value)} />
+                  </label>
+                  <label>
+                    Crop Y
+                    <input type="number" min="0" value={form.cropY} onChange={(event) => updateField('cropY', event.target.value)} />
+                  </label>
+                </>
+              )}
               <label>
                 Width
                 <input type="number" value={form.width} onChange={(event) => updateField('width', event.target.value)} />
@@ -697,7 +857,48 @@ function ToolWorkspace({ tool }) {
                   <option value="png">PNG</option>
                 </select>
               </label>
+              {tool.title === 'Rotate Image' && (
+                <label>
+                  Rotation
+                  <select value={form.angle} onChange={(event) => updateField('angle', event.target.value)}>
+                    <option value="90">90 degrees</option>
+                    <option value="180">180 degrees</option>
+                    <option value="270">270 degrees</option>
+                  </select>
+                </label>
+              )}
+              {tool.title === 'Image Filters' && (
+                <label>
+                  Filter
+                  <select value={form.filter} onChange={(event) => updateField('filter', event.target.value)}>
+                    <option value="none">Original</option>
+                    <option value="grayscale">Black & White</option>
+                    <option value="sepia">Sepia</option>
+                    <option value="blur">Soft Blur</option>
+                  </select>
+                </label>
+              )}
             </>
+          )}
+          {['Organize Pages', 'Rotate Pages'].includes(tool.title) && (
+            <label>
+              {tool.title === 'Organize Pages' ? 'Page order (example: 3,1,2)' : 'Rotation'}
+              {tool.title === 'Organize Pages' ? (
+                <input value={form.pageNumbers} onChange={(event) => updateField('pageNumbers', event.target.value)} placeholder="3,1,2" />
+              ) : (
+                <select value={form.angle} onChange={(event) => updateField('angle', event.target.value)}>
+                  <option value="90">90 degrees</option>
+                  <option value="180">180 degrees</option>
+                  <option value="270">270 degrees</option>
+                </select>
+              )}
+            </label>
+          )}
+          {tool.title === 'Watermark PDF' && (
+            <label>
+              Watermark text
+              <input value={form.watermark} onChange={(event) => updateField('watermark', event.target.value)} placeholder="CONFIDENTIAL" />
+            </label>
           )}
         </div>
       )}
